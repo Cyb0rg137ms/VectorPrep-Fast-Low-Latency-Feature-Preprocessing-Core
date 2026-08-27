@@ -146,3 +146,75 @@ class VectorPreprocessor:
         else:
             # Fallback NumPy path
             return float(np.dot(a_arr, b_arr))
+
+    def batch_pca(self, data: np.ndarray, n_components: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Computes Principal Component Analysis (PCA) using Gram-Schmidt orthogonalisation.
+        
+        Args:
+            data: 2D NumPy array of shape (N, D).
+            n_components: Number of components to keep.
+            
+        Returns:
+            (projected_data, principal_components) where principal_components is (n_components, D).
+        """
+        X = np.ascontiguousarray(data, dtype=np.float32)
+        # Center data
+        X_mean = X.mean(axis=0)
+        X_centered = X - X_mean
+        
+        # Compute covariance matrix (D, D)
+        cov = np.cov(X_centered, rowvar=False)
+        if cov.ndim == 0:
+            cov = np.array([[cov]])
+            
+        # Power iteration to find dominant eigenvectors of covariance matrix
+        D = X.shape[1]
+        components = []
+        
+        for k in range(min(n_components, D)):
+            v = np.random.randn(D).astype(np.float32)
+            v /= np.linalg.norm(v)
+            
+            for _ in range(50):
+                v_new = np.dot(cov, v)
+                # Orthogonalise against previously found components
+                for prev_v in components:
+                    v_new -= np.dot(prev_v, v_new) * prev_v
+                norm = np.linalg.norm(v_new)
+                if norm < 1e-10:
+                    break
+                v = v_new / norm
+                
+            components.append(v)
+            
+        components = np.array(components)
+        projected = np.dot(X_centered, components.T)
+        return projected, components
+
+    def quantize_embeddings(self, data: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Quantizes float32 embeddings into int8 representations.
+        
+        Uses symmetric range [-127, 127] mapping.
+        
+        Returns:
+            (quantized_int8_array, scale_factor)
+        """
+        X = np.ascontiguousarray(data, dtype=np.float32)
+        absmax = np.abs(X).max()
+        scale = absmax / 127.0 if absmax > 0 else 1.0
+        quantized = np.round(X / scale).clip(-127, 127).astype(np.int8)
+        return quantized, scale
+
+    def batch_cosine_similarity(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+        """
+        Computes pairwise cosine similarity matrix between two batches of embeddings.
+        
+        Returns:
+            2D array of shape (len(X), len(Y)).
+        """
+        X_norm = self.normalize_l2(X)
+        Y_norm = self.normalize_l2(Y)
+        return np.dot(X_norm, Y_norm.T)
+

@@ -47,3 +47,48 @@ def test_numpy_fallback_toggle():
     data = np.array([10.0, 20.0, 30.0], dtype=np.float32)
     scaled = prep.scale_minmax(data, 0.0, 100.0)
     assert np.allclose(scaled, [0.0, 50.0, 100.0])
+
+def test_batch_pca():
+    prep = VectorPreprocessor()
+    np.random.seed(42)
+    # Generate some correlated 2D data
+    x = np.random.randn(50)
+    y = x * 2.0 + np.random.randn(50) * 0.1
+    data = np.column_stack([x, y])
+    
+    projected, components = prep.batch_pca(data, n_components=1)
+    assert projected.shape == (50, 1)
+    assert components.shape == (1, 2)
+    # The principal component should point roughly in the direction of the line y = 2x
+    # (i.e. first component has ratio ~2/sqrt(5) and 1/sqrt(5))
+    ratio = abs(components[0][1] / components[0][0])
+    assert 1.5 < ratio < 2.5
+
+def test_quantize_embeddings():
+    prep = VectorPreprocessor()
+    data = np.array([-10.0, 0.0, 10.0, 5.0], dtype=np.float32)
+    quantized, scale = prep.quantize_embeddings(data)
+    
+    assert quantized.dtype == np.int8
+    assert quantized[0] == -127
+    assert quantized[2] == 127
+    assert abs(scale - (10.0 / 127.0)) < 1e-6
+
+def test_batch_cosine_similarity():
+    prep = VectorPreprocessor()
+    X = np.array([
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0]
+    ], dtype=np.float32)
+    Y = np.array([
+        [1.0, 0.0],
+        [0.0, 1.0]
+    ], dtype=np.float32)
+    
+    sims = prep.batch_cosine_similarity(X, Y)
+    assert sims.shape == (3, 2)
+    assert abs(sims[0, 0] - 1.0) < 1e-6  # Identical
+    assert abs(sims[0, 1] - 0.0) < 1e-6  # Orthogonal
+    assert abs(sims[2, 0] - 1.0 / np.sqrt(2)) < 1e-6  # 45 degrees
+
