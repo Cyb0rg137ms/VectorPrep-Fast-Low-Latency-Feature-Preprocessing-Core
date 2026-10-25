@@ -1,0 +1,144 @@
+{
+  "machine": {
+    "python": "3.13.5",
+    "numpy": "2.5.4",
+    "platform": "Linux-6.12.94+-x86_64-with-glibc2.41",
+    "cpus": 8
+  },
+  "l2_throughput": [
+    {
+      "n": 1000,
+      "d": 128,
+      "v1_numpy_ms": 0.1380199973937124,
+      "numpy_ms": 0.15187599638011307,
+      "numpy_inplace_ms": 0.1548389991512522,
+      "native_ms": 0.07500499486923218,
+      "native_inplace_ms": 0.06397499237209558,
+      "v1_numpy_vecs_per_s": 7245326.901053512,
+      "numpy_vecs_per_s": 6584318.943312243,
+      "numpy_inplace_vecs_per_s": 6458321.259382235,
+      "native_vecs_per_s": 13332445.415714711,
+      "native_inplace_vecs_per_s": 15631107.764479812
+    },
+    {
+      "n": 10000,
+      "d": 512,
+      "v1_numpy_ms": 5.074193002656102,
+      "numpy_ms": 11.022905993741006,
+      "numpy_inplace_ms": 8.260223010438494,
+      "native_ms": 4.904283996438608,
+      "native_inplace_ms": 3.2884780084714293,
+      "v1_numpy_vecs_per_s": 1970756.728166522,
+      "numpy_vecs_per_s": 907201.7855979331,
+      "numpy_inplace_vecs_per_s": 1210621.067659183,
+      "native_vecs_per_s": 2039033.6300389208,
+      "native_inplace_vecs_per_s": 3040920.442295511
+    },
+    {
+      "n": 100000,
+      "d": 768,
+      "v1_numpy_ms": 213.76143700035755,
+      "numpy_ms": 259.2992379941279,
+      "numpy_inplace_ms": 196.42211199970916,
+      "native_ms": 145.9987410053145,
+      "native_inplace_ms": 66.28415900922846,
+      "v1_numpy_vecs_per_s": 467811.22639923467,
+      "numpy_vecs_per_s": 385654.8163179122,
+      "numpy_inplace_vecs_per_s": 509107.65077278094,
+      "native_vecs_per_s": 684937.413236734,
+      "native_inplace_vecs_per_s": 1508656.0875891543
+    },
+    {
+      "n": 200000,
+      "d": 1536,
+      "v1_numpy_ms": 921.7619330011075,
+      "numpy_ms": 1227.4657230009325,
+      "numpy_inplace_ms": 819.2206800013082,
+      "native_ms": 587.2891530016204,
+      "native_inplace_ms": 259.0960380039178,
+      "v1_numpy_vecs_per_s": 216975.7643916064,
+      "numpy_vecs_per_s": 162937.3401246888,
+      "numpy_inplace_vecs_per_s": 244134.46203491912,
+      "native_vecs_per_s": 340547.75058896444,
+      "native_inplace_vecs_per_s": 771914.5438919286
+    }
+  ],
+  "quantization": [
+    {
+      "data": "gaussian",
+      "scheme": "per_tensor",
+      "sqnr_db": 38.2983171823281,
+      "max_cosine_error": 0.002645056828592861,
+      "bytes_ratio": 3.9999989583336046
+    },
+    {
+      "data": "gaussian",
+      "scheme": "per_row",
+      "sqnr_db": 42.293873954762525,
+      "max_cosine_error": 0.0016863690665635117,
+      "bytes_ratio": 3.9792746113989637
+    },
+    {
+      "data": "outlier_channels",
+      "scheme": "per_tensor",
+      "sqnr_db": 18.47457601361968,
+      "max_cosine_error": 0.02434578450598493,
+      "bytes_ratio": 3.9999989583336046
+    },
+    {
+      "data": "outlier_channels",
+      "scheme": "per_row",
+      "sqnr_db": 27.800922851492416,
+      "max_cosine_error": 0.006844439029702665,
+      "bytes_ratio": 3.9792746113989637
+    },
+    {
+      "data": "varying_row_norms",
+      "scheme": "per_tensor",
+      "sqnr_db": 16.707113883656277,
+      "max_cosine_error": 0.171117155278945,
+      "bytes_ratio": 3.9999989583336046
+    },
+    {
+      "data": "varying_row_norms",
+      "scheme": "per_row",
+      "sqnr_db": 42.27885073585381,
+      "max_cosine_error": 0.0016863705859225912,
+      "bytes_ratio": 3.9792746113989637
+    }
+  ],
+  "pca": [
+    {
+      "k": 2,
+      "explained_variance": 0.29123391726248105,
+      "explained_variance_svd": 0.29123394082917664,
+      "min_axis_alignment": 0.999999634662846,
+      "power_ms": 2.660732003278099,
+      "svd_ms": 49.73950301064178
+    },
+    {
+      "k": 5,
+      "explained_variance": 0.4438758329527196,
+      "explained_variance_svd": 0.44387585259401197,
+      "min_axis_alignment": 0.9999987512288355,
+      "power_ms": 3.259061006247066,
+      "svd_ms": 231.96784500032663
+    },
+    {
+      "k": 10,
+      "explained_variance": 0.568223665979593,
+      "explained_variance_svd": 0.5682236861343325,
+      "min_axis_alignment": 0.9999959552028522,
+      "power_ms": 7.95956100046169,
+      "svd_ms": 48.4883109893417
+    },
+    {
+      "k": 20,
+      "explained_variance": 0.6980460101286166,
+      "explained_variance_svd": 0.6980460473628938,
+      "min_axis_alignment": 0.9999562329552979,
+      "power_ms": 8.434810995822772,
+      "svd_ms": 138.98246800818015
+    }
+  ]
+}
