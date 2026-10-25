@@ -1,86 +1,61 @@
 /*
- * preprocessor.cpp
- * ================
- * High-performance C++ vector and matrix preprocessing library.
- * Exposes C-compatible bindings for MinMax scaling, L2 normalization, and dot products.
+ * preprocessor.cpp: C ABI kernels for VectorPrep (loaded with ctypes).
+ *
+ * v2 changes vs v1:
+ *   - 64-bit sizes (v1 used int, which overflows past 2^31 elements);
+ *   - double accumulators for sums of squares and dot products (v1 accumulated in
+ *     float, losing ~3-4 digits on long vectors);
+ *   - all kernels operate on caller-owned buffers; the Python layer copies first
+ *     unless the caller explicitly asks for in-place operation.
  */
-
 #include <cmath>
-#include <iostream>
+#include <cstdint>
 
 #if defined(_MSC_VER)
-    #define EXPORT __declspec(dllexport)
+#define EXPORT __declspec(dllexport)
 #else
-    #define EXPORT __attribute__((visibility("default")))
+#define EXPORT __attribute__((visibility("default")))
 #endif
 
 extern "C" {
 
-    /**
-     * Scales an array in-place to the range [min_val, max_val] (MinMax scaling).
-     */
-    EXPORT void scale_minmax(float* data, int size, float target_min, float target_max) {
-        if (size <= 0 || !data) return;
+EXPORT int32_t vectorprep_abi_version() { return 2; }
 
-        float current_min = data[0];
-        float current_max = data[0];
-
-        // Find min and max
-        for (int i = 1; i < size; ++i) {
-            if (data[i] < current_min) current_min = data[i];
-            if (data[i] > current_max) current_max = data[i];
-        }
-
-        float range = current_max - current_min;
-        if (range == 0.0f) {
-            for (int i = 0; i < size; ++i) {
-                data[i] = target_min;
-            }
-            return;
-        }
-
-        float target_range = target_max - target_min;
-
-        // Perform in-place scale transformation
-        for (int i = 0; i < size; ++i) {
-            data[i] = target_min + ((data[i] - current_min) / range) * target_range;
-        }
+EXPORT void scale_minmax(float* data, int64_t size, float target_min, float target_max) {
+    if (size <= 0 || !data) return;
+    float lo = data[0], hi = data[0];
+    for (int64_t i = 1; i < size; ++i) {
+        const float v = data[i];
+        lo = v < lo ? v : lo;
+        hi = v > hi ? v : hi;
     }
-
-    /**
-     * Normalizes each row of a matrix to have L2 norm = 1 (L2 normalization).
-     */
-    EXPORT void normalize_l2(float* data, int rows, int cols) {
-        if (rows <= 0 || cols <= 0 || !data) return;
-
-        for (int r = 0; r < rows; ++r) {
-            float* row = data + (r * cols);
-            
-            // Calculate sum of squares
-            float sum_sq = 0.0f;
-            for (int c = 0; c < cols; ++c) {
-                sum_sq += row[c] * row[c];
-            }
-
-            float norm = std::sqrt(sum_sq);
-            if (norm > 0.0f) {
-                for (int c = 0; c < cols; ++c) {
-                    row[c] /= norm;
-                }
-            }
-        }
+    const double range = static_cast<double>(hi) - lo;
+    if (range == 0.0) {
+        for (int64_t i = 0; i < size; ++i) data[i] = target_min;
+        return;
     }
+    const double k = (static_cast<double>(target_max) - target_min) / range;
+    for (int64_t i = 0; i < size; ++i) data[i] = static_cast<float>(target_min + (data[i] - lo) * k);
+}
 
-    /**
-     * Computes the dot product of two arrays.
-     */
-    EXPORT float vector_dot_product(const float* a, const float* b, int size) {
-        if (size <= 0 || !a || !b) return 0.0f;
-
-        float dot = 0.0f;
-        for (int i = 0; i < size; ++i) {
-            dot += a[i] * b[i];
+EXPORT void normalize_l2(float* data, int64_t rows, int64_t cols) {
+    if (rows <= 0 || cols <= 0 || !data) return;
+    for (int64_t r = 0; r < rows; ++r) {
+        float* row = data + r * cols;
+        double ss = 0.0;
+        for (int64_t c = 0; c < cols; ++c) ss += static_cast<double>(row[c]) * row[c];
+        if (ss > 0.0) {
+            const float inv = static_cast<float>(1.0 / std::sqrt(ss));
+            for (int64_t c = 0; c < cols; ++c) row[c] *= inv;
         }
-        return dot;
     }
 }
+
+EXPORT double vector_dot_product(const float* a, const float* b, int64_t size) {
+    if (size <= 0 || !a || !b) return 0.0;
+    double dot = 0.0;
+    for (int64_t i = 0; i < size; ++i) dot += static_cast<double>(a[i]) * b[i];
+    return dot;
+}
+
+}  // extern "C"

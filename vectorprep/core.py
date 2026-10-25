@@ -1,220 +1,115 @@
-"""
-core.py
-=======
-Python wrapper for the high-performance C++ VectorPrep library using ctypes.
-Features automatic fallback to pure-Python/NumPy if C++ library is not compiled.
+"""``VectorPreprocessor``: one API over the NumPy kernels and the optional C++ backend.
+
+v1 compatibility: same class name, method names and return types; ``has_cpp = False``
+still forces the NumPy path. Behaviour changes in v2 (see README, "Bugs fixed"):
+inputs are no longer silently modified in place (pass ``inplace=True`` to opt in), the
+C++ path uses 64-bit sizes and float64 accumulators, and PCA is seeded and converges
+to a tolerance instead of running a fixed 50 iterations from an unseeded start.
 """
 
-import ctypes
-import os
-import sys
+from __future__ import annotations
+
+import logging
+from typing import Literal
+
 import numpy as np
-from pathlib import Path
-from typing import Tuple, Optional
+from numpy.typing import NDArray
 
-# Find C++ library binary path
-LIB_NAME = "libpreprocessor.so"
-if sys.platform.startswith("win32"):
-    LIB_NAME = "preprocessor.dll"
-elif sys.platform.startswith("darwin"):
-    LIB_NAME = "libpreprocessor.dylib"
+from vectorprep import kernels, native
+from vectorprep.pca import pca_power
+from vectorprep.quantize import quantize_int8
 
-_lib_path = Path(__file__).parent.parent / "build" / LIB_NAME
-_cpp_lib: Optional[ctypes.CDLL] = None
-
-# Attempt to load C++ shared library
-try:
-    if _lib_path.exists():
-        _cpp_lib = ctypes.CDLL(str(_lib_path))
-        
-        # Define scale_minmax
-        _cpp_lib.scale_minmax.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_int,
-            ctypes.c_float,
-            ctypes.c_float
-        ]
-        _cpp_lib.scale_minmax.restype = None
-        
-        # Define normalize_l2
-        _cpp_lib.normalize_l2.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_int,
-            ctypes.c_int
-        ]
-        _cpp_lib.normalize_l2.restype = None
-        
-        # Define vector_dot_product
-        _cpp_lib.vector_dot_product.argtypes = [
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_int
-        ]
-        _cpp_lib.vector_dot_product.restype = ctypes.c_float
-        
-except Exception:
-    _cpp_lib = None
+log = logging.getLogger(__name__)
+Backend = Literal["auto", "numpy", "native"]
 
 
 class VectorPreprocessor:
-    """Preprocesses matrix/vector structures using C++ or fallback NumPy implementations."""
-    
-    def __init__(self):
-        self.has_cpp = (_cpp_lib is not None)
+    """Preprocesses vectors/matrices with the C++ backend when built, else NumPy.
 
-    def scale_minmax(self, data: np.ndarray, target_min: float = 0.0, target_max: float = 1.0) -> np.ndarray:
-        """
-        Scales input data in-place to range [target_min, target_max].
-        
-        Args:
-            data: NumPy array of shape (N,).
-            target_min: Scaled minimum boundary.
-            target_max: Scaled maximum boundary.
-            
-        Returns:
-            The scaled NumPy array.
-        """
-        # Ensure contiguous float32 data array
-        data_arr = np.ascontiguousarray(data, dtype=np.float32)
-        
-        if self.has_cpp and _cpp_lib is not None:
-            # C++ path
-            data_ptr = data_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            _cpp_lib.scale_minmax(data_ptr, data_arr.size, target_min, target_max)
-            return data_arr
-        else:
-            # Fallback NumPy path
-            d_min = data_arr.min()
-            d_max = data_arr.max()
-            d_range = d_max - d_min
-            if d_range == 0:
-                data_arr.fill(target_min)
-                return data_arr
-                
-            scaled = target_min + ((data_arr - d_min) / d_range) * (target_max - target_min)
-            return scaled
+    Args:
+        backend: ``"auto"`` (native if a library is found), ``"numpy"`` or ``"native"``
+            (raises if no library is available).
+        seed: seed for :meth:`batch_pca`.
+    """
 
-    def normalize_l2(self, data: np.ndarray) -> np.ndarray:
-        """
-        Normalizes rows of a 2D matrix in-place to L2 norm = 1.
-        
-        Args:
-            data: 2D NumPy array of shape (rows, cols).
-            
-        Returns:
-            L2-normalized NumPy array.
-        """
-        data_arr = np.ascontiguousarray(data, dtype=np.float32)
-        if len(data_arr.shape) != 2:
+    def __init__(self, backend: Backend = "auto", seed: int = 0) -> None:
+        self.seed = seed
+        self._native = None if backend == "numpy" else native.find()
+        if backend == "native" and self._native is None:
+            raise RuntimeError("native backend requested but not built; run `vectorprep build-native`")
+        self.has_cpp = self._native is not None
+        log.debug("VectorPreprocessor backend=%s", "native" if self.has_cpp else "numpy")
+
+    @property
+    def backend(self) -> str:
+        return "native" if self._use_native() else "numpy"
+
+    def _use_native(self) -> bool:
+        return bool(self.has_cpp and self._native is not None)
+
+    @staticmethod
+    def _f32(x: NDArray[np.floating], inplace: bool) -> NDArray[np.float32]:
+        if inplace:
+            if not (isinstance(x, np.ndarray) and x.dtype == np.float32 and x.flags.c_contiguous):
+                raise ValueError("inplace=True needs a C-contiguous float32 array")
+            return x
+        return np.array(x, dtype=np.float32, order="C", copy=True)
+
+    def scale_minmax(
+        self, data: NDArray[np.floating], target_min: float = 0.0, target_max: float = 1.0, inplace: bool = False
+    ) -> NDArray[np.float32]:
+        """Affinely map ``data`` onto ``[target_min, target_max]`` (constant input → ``target_min``)."""
+        x = self._f32(data, inplace)
+        if x.size == 0:
+            return x
+        if self._use_native():
+            assert self._native is not None
+            self._native.scale_minmax_(x, target_min, target_max)
+            return x
+        out = kernels.scale_minmax(x, target_min, target_max)
+        if inplace:
+            x[...] = out
+            return x
+        return out
+
+    def normalize_l2(self, data: NDArray[np.floating], inplace: bool = False) -> NDArray[np.float32]:
+        """Scale every row of a 2-D matrix to unit L2 norm; all-zero rows stay zero."""
+        if np.ndim(data) != 2:
             raise ValueError("Input data must be a 2D matrix.")
-            
-        rows, cols = data_arr.shape
-        
-        if self.has_cpp and _cpp_lib is not None:
-            # C++ path
-            data_ptr = data_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            _cpp_lib.normalize_l2(data_ptr, rows, cols)
-            return data_arr
-        else:
-            # Fallback NumPy path
-            norms = np.linalg.norm(data_arr, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0  # Avoid zero divisions
-            return data_arr / norms
+        x = self._f32(data, inplace)
+        if self._use_native():
+            assert self._native is not None
+            self._native.normalize_l2_(x)
+            return x
+        out = kernels.normalize_l2(x)
+        if inplace:
+            x[...] = out
+            return x
+        return out
 
-    def dot_product(self, a: np.ndarray, b: np.ndarray) -> float:
-        """
-        Computes dot product of two arrays.
-        
-        Args:
-            a: NumPy array of shape (N,).
-            b: NumPy array of shape (N,).
-            
-        Returns:
-            Float scalar dot product.
-        """
-        a_arr = np.ascontiguousarray(a, dtype=np.float32)
-        b_arr = np.ascontiguousarray(b, dtype=np.float32)
-        
-        if a_arr.size != b_arr.size:
+    def dot_product(self, a: NDArray[np.floating], b: NDArray[np.floating]) -> float:
+        """Dot product accumulated in float64."""
+        a32 = np.ascontiguousarray(a, dtype=np.float32).ravel()
+        b32 = np.ascontiguousarray(b, dtype=np.float32).ravel()
+        if a32.size != b32.size:
             raise ValueError("Vector sizes must match.")
-            
-        if self.has_cpp and _cpp_lib is not None:
-            # C++ path
-            a_ptr = a_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            b_ptr = b_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-            return float(_cpp_lib.vector_dot_product(a_ptr, b_ptr, a_arr.size))
-        else:
-            # Fallback NumPy path
-            return float(np.dot(a_arr, b_arr))
+        if self._use_native():
+            assert self._native is not None
+            return self._native.dot(a32, b32)
+        return kernels.dot(a32, b32)
 
-    def batch_pca(self, data: np.ndarray, n_components: int) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Computes Principal Component Analysis (PCA) using Gram-Schmidt orthogonalisation.
-        
-        Args:
-            data: 2D NumPy array of shape (N, D).
-            n_components: Number of components to keep.
-            
-        Returns:
-            (projected_data, principal_components) where principal_components is (n_components, D).
-        """
-        X = np.ascontiguousarray(data, dtype=np.float32)
-        # Center data
-        X_mean = X.mean(axis=0)
-        X_centered = X - X_mean
-        
-        # Compute covariance matrix (D, D)
-        cov = np.cov(X_centered, rowvar=False)
-        if cov.ndim == 0:
-            cov = np.array([[cov]])
-            
-        # Power iteration to find dominant eigenvectors of covariance matrix
-        D = X.shape[1]
-        components = []
-        
-        for k in range(min(n_components, D)):
-            v = np.random.randn(D).astype(np.float32)
-            v /= np.linalg.norm(v)
-            
-            for _ in range(50):
-                v_new = np.dot(cov, v)
-                # Orthogonalise against previously found components
-                for prev_v in components:
-                    v_new -= np.dot(prev_v, v_new) * prev_v
-                norm = np.linalg.norm(v_new)
-                if norm < 1e-10:
-                    break
-                v = v_new / norm
-                
-            components.append(v)
-            
-        components = np.array(components)
-        projected = np.dot(X_centered, components.T)
-        return projected, components
+    def batch_pca(
+        self, data: NDArray[np.floating], n_components: int
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        """Seeded subspace-iteration PCA. Returns ``(projected (N, k), components (k, D))``."""
+        comps, _, proj = pca_power(data, n_components, seed=self.seed)
+        return proj.astype(np.float32), comps.astype(np.float32)
 
-    def quantize_embeddings(self, data: np.ndarray) -> Tuple[np.ndarray, float]:
-        """
-        Quantizes float32 embeddings into int8 representations.
-        
-        Uses symmetric range [-127, 127] mapping.
-        
-        Returns:
-            (quantized_int8_array, scale_factor)
-        """
-        X = np.ascontiguousarray(data, dtype=np.float32)
-        absmax = np.abs(X).max()
-        scale = absmax / 127.0 if absmax > 0 else 1.0
-        quantized = np.round(X / scale).clip(-127, 127).astype(np.int8)
-        return quantized, scale
+    def quantize_embeddings(self, data: NDArray[np.floating]) -> tuple[NDArray[np.int8], float]:
+        """Per-tensor symmetric int8 quantisation. Returns ``(q, scale)``; ``x ≈ q * scale``."""
+        q, scale = quantize_int8(data)
+        return q, float(scale)
 
-    def batch_cosine_similarity(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
-        """
-        Computes pairwise cosine similarity matrix between two batches of embeddings.
-        
-        Returns:
-            2D array of shape (len(X), len(Y)).
-        """
-        X_norm = self.normalize_l2(X)
-        Y_norm = self.normalize_l2(Y)
-        return np.dot(X_norm, Y_norm.T)
-
+    def batch_cosine_similarity(self, X: NDArray[np.floating], Y: NDArray[np.floating]) -> NDArray[np.float32]:
+        """Pairwise cosine similarity matrix of shape ``(len(X), len(Y))``."""
+        return np.asarray(self.normalize_l2(X) @ self.normalize_l2(Y).T)
